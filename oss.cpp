@@ -14,17 +14,14 @@
 #include <sstream>
 
 using namespace std;
-
-// TODO: Define total resource struct may need to be in shared memory
 // TODO: Define per resource descriptor i think it just needs to say what process has what resource and how much
-
-
 
 struct PCB {
     bool occupied;
     pid_t pid;
     int start_sec;
     int start_nano;
+    int pcb_index;
 };
 
 struct MessageBuffer {
@@ -37,7 +34,7 @@ key_t sh_key = ftok("oss.cpp", 0);
 int shmid = shmget(sh_key, sizeof(int)*2, IPC_CREAT | 0666);
 int *shm_clock;
 int *sec;
-vector <PCB> table(20);
+vector <PCB> table(18);
 const int increment_amount = 10000;
 
 // setup message queue
@@ -107,6 +104,10 @@ int remove_pcb(vector<PCB> &table, pid_t pid) {
     for (size_t i = 0; i < table.size(); ++i) {
         if (table[i].occupied && table[i].pid == pid) {
             table[i].occupied = false;
+            table[i].pid = -1;
+            table[i].start_sec = 0;
+            table[i].start_nano = 0;
+            table[i].pcb_index = -1;
             return i;
         }
     }
@@ -347,6 +348,7 @@ int main(int argc, char* argv[]) {
             table[pcb_index].pid = worker_pid;
             table[pcb_index].start_sec = *sec;
             table[pcb_index].start_nano = *nano;
+            table[pcb_index].pcb_index = pcb_index;
 
             launched_processes++;
             running_processes++;
