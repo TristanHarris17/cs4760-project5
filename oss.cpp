@@ -15,13 +15,16 @@
 
 using namespace std;
 
+// TODO: Define total resource struct may need to be in shared memory
+// TODO: Define per resource descriptor i think it just needs to say what process has what resource and how much
+
+
+
 struct PCB {
     bool occupied;
     pid_t pid;
     int start_sec;
     int start_nano;
-    int messagesSent;
-    int workerID;
 };
 
 struct MessageBuffer {
@@ -36,21 +39,14 @@ int *shm_clock;
 int *sec;
 vector <PCB> table(20);
 const int increment_amount = 10000;
-static int nextWorkerID = 0;
 
 // setup message queue
 key_t msg_key = ftok("oss.cpp", 1);
 int msgid = msgget(msg_key, IPC_CREAT | 0666);
 
-void increment_clock(int* sec, int* nano, int running_children) {
+void increment_clock(int* sec, int* nano, long long inc_ns) {
     const long long NSEC_PER_SEC = 1000000000LL;
-    const long long BASE_INC_NS = 250000000LL; // 250 ms in ns
-
-    // If there are children, divide the 250ms evenly among them.
-    // If no children, advance by full 250ms.
-    long long inc_ns = (running_children > 0) ? (BASE_INC_NS / running_children) : BASE_INC_NS;
-    if (inc_ns <= 0) inc_ns = 1; // guard against zero
-
+    if (inc_ns <= 0) inc_ns = 1; // guard against non-positive increments
     long long total = (long long)(*nano) + inc_ns;
     *sec += (int)(total / NSEC_PER_SEC);
     *nano = (int)(total % NSEC_PER_SEC);
@@ -136,8 +132,7 @@ void print_process_table(const std::vector<PCB> &table) {
         if (p.occupied) {
             cout << std::setw(12) << p.pid
                  << std::setw(12) << p.start_sec
-                 << std::setw(12) << p.start_nano
-                 << std::setw(12) << p.messagesSent;
+                 << std::setw(12) << p.start_nano;
         } else {
             cout << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-";
         }
@@ -163,21 +158,6 @@ void exit_handler() {
     shmctl(shmid, IPC_RMID, nullptr);
     msgctl(msgid, IPC_RMID, nullptr);
     exit(1);
-}
-
-pid_t select_next_worker(const vector<PCB> &table) {
-    static int last_idx = -1;
-    size_t n = table.size();
-    if (n == 0) return (pid_t)-1;
-    // try each slot once, starting after last_idx
-    for (size_t i = 1; i <= n; ++i) {
-        size_t idx = (last_idx + i) % n;
-        if (table[idx].occupied) {
-            last_idx = (int)idx;
-            return table[idx].pid;
-        }
-    }
-    return (pid_t)-1;
 }
 
 // helper to detect empty/blank optarg
@@ -352,69 +332,29 @@ int main(int argc, char* argv[]) {
     long long next_launch_total = 0; 
 
     MessageBuffer sndMessage;
-    int message_count = 0;
 
     while (launched_processes < proc || running_processes > 0) {
-        increment_clock(sec, nano, running_processes);
+        increment_clock(sec, nano, increment_amount);
 
-        // send message to next worker in round-robin fashion
-        pid_t next_worker_pid = select_next_worker(table);
-        int target_idx = -1;
+        // Check if it's time to launch a new worker
+        long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
+        if (launched_processes < proc && running_processes < simul && current_total >= next_launch_total) {
+            pid_t worker_pid = launch_worker(time_limit);
 
-        if (next_worker_pid != (pid_t)-1) {
-            // find the index in the PCB table for printing
-            for (size_t i = 0; i < table.size(); ++i) {
-                if (table[i].occupied && table[i].pid == next_worker_pid) {
-                    target_idx = (int)i;
-                    break;
-                }
-            }
+            // Find empty slot in PCB array and populate it with new process info
+            int pcb_index = find_empty_pcb(table);
+            table[pcb_index].occupied = true;
+            table[pcb_index].pid = worker_pid;
+            table[pcb_index].start_sec = *sec;
+            table[pcb_index].start_nano = *nano;
 
-            {
-                ostringstream ss;
-                ss << "OSS: Sending message to worker " << table[target_idx].workerID
-                   << " PID " << next_worker_pid <<  " at " << *sec << " seconds and " << *nano << " nanoseconds." << endl;
-                oss_log(ss.str());
-            }
+            launched_processes++;
+            running_processes++;
 
-            // prepare and send message to the selected worker
-            sndMessage.mtype = next_worker_pid;
-            sndMessage.process_running = 1;
-            if (msgsnd(msgid, &sndMessage, sizeof(sndMessage.process_running), 0) == -1) {
-                cerr << "msgsnd";
-                exit_handler();
-            }
-            
-            // increment message count for this worker
-            table[target_idx].messagesSent++;
-            message_count++;
-
-            // receive reply from worker we just pinged
-            MessageBuffer rcvMessage;
-            if (msgrcv(msgid, &rcvMessage, sizeof(rcvMessage.process_running), getpid(), 0) == -1) {
-                cerr << "msgrcv";
-                exit_handler();
-            }
-
-            {
-                ostringstream ss;
-                ss << "OSS: Received reply from worker " << table[target_idx].workerID << " process_running=" << rcvMessage.process_running
-                   << " PID " << next_worker_pid << " at " << *sec << " seconds and " << *nano << " nanoseconds." << endl;
-                oss_log(ss.str());
-            }
-
-            // If worker reported it is done, clean up PCB and counters
-            if (rcvMessage.process_running == 0) {
-                {
-                    ostringstream ss;
-                    ss << "OSS: Worker " << table[target_idx].workerID << " PID " << next_worker_pid << " has decided to terminate." << endl;
-                    oss_log(ss.str());
-                }
-                 wait(0);
-                 remove_pcb(table, next_worker_pid);
-                 running_processes = max(0, running_processes - 1);
-             }
-         }
+            // Update the next allowed launch time
+            next_launch_total = current_total + launch_interval_nano;
+            print_process_table(table);
+        }
 
         // call print_process_table every half-second of simulated time
         {
@@ -425,37 +365,17 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // Check if it's time to launch a new worker
-        long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
-        if (launched_processes < proc && running_processes < simul && current_total >= next_launch_total) {
-            float worker_time = dis(gen);
-            pid_t worker_pid = launch_worker(worker_time);
-
-            // Find empty slot in PCB array and populate it with new process info
-            int pcb_index = find_empty_pcb(table);
-            table[pcb_index].occupied = true;
-            table[pcb_index].pid = worker_pid;
-            table[pcb_index].start_sec = *sec;
-            table[pcb_index].start_nano = *nano;
-            table[pcb_index].workerID = ++nextWorkerID;
-
-            launched_processes++;
-            running_processes++;
-
-            // Update the next allowed launch time
-            next_launch_total = current_total + launch_interval_nano;
-            print_process_table(table);
+        pid_t terminated_pid = child_Terminated();
+        if (terminated_pid > 0) {
+            remove_pcb(table, terminated_pid);
+            running_processes--;
+            cout << "OSS: Detected termination of child PID " << terminated_pid << endl;
         }
+
+
     }
 
-    {
-        ostringstream ss;
-        ss << "OSS terminating after reaching process limit and all workers have finished." << endl;
-        ss << "Number of processes launched: " << launched_processes << endl;
-        ss << "Number of messages sent: " << message_count << endl;
-        oss_log(ss.str());
-    }
- 
+    // cleanup
      shmdt(shm_clock);
      shmctl(shmid, IPC_RMID, nullptr);
      msgctl(msgid, IPC_RMID, nullptr);

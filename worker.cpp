@@ -9,6 +9,9 @@
 
 using namespace std;
 
+// TODO: get random time interval for when it will either request or release a resource
+// TODO: implement when its time to do that request/release have a 60% chance to request and 40% chance to release
+
 struct MessageBuffer {
     long mtype;
     int process_running; // 1 if running, 0 if not
@@ -67,46 +70,18 @@ int main(int argc, char* argv[]) {
     // message-driven loop: block until OSS tells us to check the clock
     MessageBuffer msg;
     pid_t oss_pid = getppid();
-    int message_count = 0;
 
     while (true) {
-        // block until oss sends a message addressed to this worker (mtype == this pid)
-        if (msgrcv(msgid, &msg, sizeof(msg.process_running), getpid(), 0) == -1) {
-            if (errno == EINTR) continue;
-            cerr << "msgrcv failed" << endl;
-            break;
-        }
-
-        // Print message received
-        cout << "Worker PID:" << getpid() << " PPID:" << getppid() << endl
-         << "SysClockS: " << *sec << " SysclockNano: " << *nano << " TermTimeS: " << end_seconds << " TermTimeNano: " << end_nano << endl
-         << "-- " << ++message_count << " messages received from oss" << endl;
-
-        // After receiving the ping, check if it's time to terminate
+        // check if its time to terminate 
         bool should_terminate = ((*sec > end_seconds) || (*sec == end_seconds && *nano >= end_nano));
 
         if (should_terminate) {
             // print terminating message
+            // TODO: add more deailated info
             cout << "Worker PID:" << getpid() << " PPID:" << getppid() << endl
                  << "SysClockS: " << *sec << " SysclockNano: " << *nano << " TermTimeS: " << end_seconds << " TermTimeNano: " << end_nano << endl
-                 << "--Terminating after sending message back to oss after " << message_count << " received messages." << endl;
-
-            // notify OSS that this process is no longer running (process_running = 0)
-            MessageBuffer reply;
-            reply.mtype = (long)oss_pid;
-            reply.process_running = 0;
-            if (msgsnd(msgid, &reply, sizeof(reply.process_running), 0) == -1) {
-                cerr << "msgsnd failed" << endl;
-            }
+                 << "--Terminating" << endl;
             break; // exit loop and terminate
-        } else {
-            // notify OSS that this process is still running (process_running = 1)
-            MessageBuffer reply;
-            reply.mtype = (long)oss_pid;
-            reply.process_running = 1;
-            if (msgsnd(msgid, &reply, sizeof(reply.process_running), 0) == -1) {
-                cerr << "msgsnd failed" << endl;
-            }
         }
     }
     shmdt(clock);
