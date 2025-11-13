@@ -364,7 +364,7 @@ int main(int argc, char* argv[]) {
             print_process_table(table);
         }
 
-        // non blocking message receive from any worker
+        // non blocking message receive 
         ssize_t msg_size = sizeof(MessageBuffer) - sizeof(long);
         ssize_t ret = msgrcv(msgid, &rcvMessage, msg_size, getpid(), IPC_NOWAIT);
         if (ret == -1) {
