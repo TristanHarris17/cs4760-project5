@@ -12,6 +12,7 @@
 #include <random>
 #include <fstream>
 #include <sstream>
+#include <cstring>
 #include "resources.h"
 
 using namespace std;
@@ -26,6 +27,10 @@ struct PCB {
 
 struct MessageBuffer {
     long mtype;
+    int pid;
+    int request_or_release; // 1 for request, 0 for release
+    int resource_request[MAX_RESOURCES]; // array of resource requests
+    int resource_release[MAX_RESOURCES]; // array of resource releases
     int process_running; // 1 if running, 0 if not
 };
 
@@ -332,7 +337,8 @@ int main(int argc, char* argv[]) {
     long long launch_interval_nano = (long long)(launch_interval * 1e9); // convert launch interval to nanoseconds
     long long next_launch_total = 0; 
 
-    MessageBuffer sndMessage;
+    MessageBuffer rcvMessage;
+    MessageBuffer ackMessage;
 
     while (launched_processes < proc || running_processes > 0) {
         increment_clock(sec, nano, increment_amount);
@@ -356,6 +362,51 @@ int main(int argc, char* argv[]) {
             // Update the next allowed launch time
             next_launch_total = current_total + launch_interval_nano;
             print_process_table(table);
+        }
+
+        // non blocking message receive from any worker
+        ssize_t msg_size = sizeof(MessageBuffer) - sizeof(long);
+        ssize_t ret = msgrcv(msgid, &rcvMessage, msg_size, getpid(), IPC_NOWAIT);
+        if (ret == -1) {
+            if (errno == ENOMSG) {
+                // no message available, continue
+            } else {
+                perror("msgrcv");
+                exit_handler();
+            }
+        } else {
+            if (rcvMessage.process_running == 0) {
+                // worker indicates it is terminating
+                cout << "OSS: Worker " << rcvMessage.mtype << " indicates it is terminating." << endl;
+                // TODO handle resource clean up from terminating worker
+                continue;
+            }
+            // process resource requests/releases
+
+            if (rcvMessage.request_or_release == 1) {
+                cout << "OSS: Processing resource request from worker " << rcvMessage.mtype << endl;
+                // send message to worker acknowledging request
+                memset(&ackMessage, 0, sizeof(ackMessage));
+                ackMessage.mtype = rcvMessage.pid;
+                ackMessage.process_running = 1;
+                size_t ack_size = sizeof(MessageBuffer) - sizeof(long);
+                if (msgsnd(msgid, &ackMessage, ack_size, 0) == -1) {
+                    perror("oss msgsnd ack failed");
+                    exit_handler();
+                }
+            }
+            if (rcvMessage.request_or_release == 0) {
+                cout << "OSS: Processing resource release from worker " << rcvMessage.mtype << endl;
+                // send message to worker acknowledging release
+                memset(&ackMessage, 0, sizeof(ackMessage));
+                ackMessage.mtype = rcvMessage.pid;
+                ackMessage.process_running = 1;
+                size_t ack_size = sizeof(MessageBuffer) - sizeof(long);
+                if (msgsnd(msgid, &ackMessage, ack_size, 0) == -1) {
+                    perror("oss msgsnd ack failed");
+                    exit_handler();
+                }
+            }
         }
 
         // call print_process_table every half-second of simulated time
