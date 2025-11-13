@@ -12,9 +12,9 @@
 #include <random>
 #include <fstream>
 #include <sstream>
+#include "resources.h"
 
 using namespace std;
-// TODO: Define per resource descriptor i think it just needs to say what process has what resource and how much
 
 struct PCB {
     bool occupied;
