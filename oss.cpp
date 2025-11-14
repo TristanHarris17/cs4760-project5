@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <algorithm>
 #include "resources.h"
 
 using namespace std;
@@ -49,6 +50,23 @@ const int increment_amount = 10000;
 // setup message queue
 key_t msg_key = ftok("oss.cpp", 1);
 int msgid = msgget(msg_key, IPC_CREAT | 0666);
+
+// global log stream and helper so other functions can log to the same place as main
+ofstream log_fs;
+static const size_t MAX_LOG_LINES = 10000;
+static size_t log_lines_written = 0;
+static inline void oss_log_msg(const string &s) {
+    // always print to stdout
+    cout << s;
+    if (!log_fs.is_open()) return;
+    size_t newlines = count(s.begin(), s.end(), '\n'); // count how many new lines this message contains
+    if (log_lines_written >= MAX_LOG_LINES) return; // if limit is reached, skip
+    if (log_lines_written + newlines > MAX_LOG_LINES) return; // skip message if it would exceed limit
+    // else write the whole message and update counter
+    log_fs << s;
+    log_fs.flush();
+    log_lines_written += newlines;
+}
 
 void increment_clock(int* sec, int* nano, long long inc_ns) {
     const long long NSEC_PER_SEC = 1000000000LL;
@@ -133,58 +151,61 @@ int remove_pcb(vector<PCB> &table, pid_t pid) {
 }
 
 void print_process_table(const std::vector<PCB> &table) {
-    using std::cout;
+    ostringstream ss;
     using std::endl;
-    cout << std::left
+    ss << std::left
          << std::setw(6)  << "Index"
          << std::setw(10) << "Occ"
          << std::setw(12) << "PID"
          << std::setw(12) << "StartSec"
-         << std::setw(12) << "StartNano"
-         << std::setw(12) << "MsgsSent" << endl;
-    cout << std::string(64, '-') << endl;
+         << std::setw(12) << "StartNano" << endl;
+    ss << std::string(52, '-') << endl;
 
     for (size_t i = 0; i < table.size(); ++i) {
         const PCB &p = table[i];
-        cout << std::left << std::setw(6) << i
-             << std::setw(10) << (p.occupied ? 1 : 0);
+        ss << std::left << std::setw(6) << i
+           << std::setw(10) << (p.occupied ? 1 : 0);
         if (p.occupied) {
-            cout << std::setw(12) << p.pid
-                 << std::setw(12) << p.start_sec
-                 << std::setw(12) << p.start_nano;
+            ss << std::setw(12) << p.pid
+               << std::setw(12) << p.start_sec
+               << std::setw(12) << p.start_nano;
         } else {
-            cout << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-";
+            ss << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-";
         }
-        cout << endl;
+        ss << endl;
     }
-    cout << endl;
+    ss << endl;
+    oss_log_msg(ss.str());
 }
 
 void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> &allocation_matrix) {
-    using std::cout;
     using std::endl;
+    std::ostringstream ss;
+
+    const int proc_col = 8;
+    const int res_col = 8;
 
     // Header
-    cout << std::left << std::setw(6) << "Proc";
+    ss << std::left << std::setw(proc_col) << "Proc";
     for (int r = 0; r < MAX_RESOURCES; ++r) {
-        std::ostringstream h;
-        h << "R" << r;
-        cout << std::setw(6) << h.str();
+        ss << std::right << std::setw(res_col) << ("R" + std::to_string(r));
     }
-    cout << endl;
+    ss << endl;
 
     // Separator
-    cout << std::string(6 + 6 * MAX_RESOURCES, '-') << endl;
+    ss << std::string(proc_col + res_col * MAX_RESOURCES, '-') << endl;
 
     // Rows
     for (int p = 0; p < MAX_PROCESSES; ++p) {
-        cout << std::left << std::setw(6) << p;
+        ss << std::left << std::setw(proc_col) << p;
         for (int r = 0; r < MAX_RESOURCES; ++r) {
-            cout << std::setw(6) << allocation_matrix[p][r];
+            ss << std::right << std::setw(res_col) << allocation_matrix[p][r];
         }
-        cout << endl;
+        ss << endl;
     }
-    cout << endl;
+    ss << endl;
+
+    oss_log_msg(ss.str());
 }
 
 void signal_handler(int sig) {
@@ -344,7 +365,6 @@ int main(int argc, char* argv[]) {
     uniform_real_distribution<double> dis(1, time_limit);
 
     // open log file if specified
-    ofstream log_fs;
     if (!log_file.empty()) {
         log_fs.open(log_file);
         if (!log_fs) {
@@ -408,7 +428,7 @@ int main(int argc, char* argv[]) {
             print_process_table(table);
         }
 
-        // TODO check queue to see if resources can be allocated to waiting processes
+        // process queued requests
         while (!process_queue.empty()) {
             MessageBuffer &queued_msg = process_queue.front();
             int pcb_index = find_pcb_by_pid(queued_msg.pid);
@@ -425,6 +445,15 @@ int main(int argc, char* argv[]) {
                     for (int i = 0; i < MAX_RESOURCES; i++) {
                         resource_table.available_resources[i] -= queued_msg.resource_request[i];
                         resource_table.allocation_matrix[pcb_index][i] += queued_msg.resource_request[i];
+                    }
+                    { 
+                        ostringstream ss;
+                        ss << "OSS: Allocated queued resources to worker " << queued_msg.pid << " ";
+                        for (int i = 0; i < MAX_RESOURCES; i++) {
+                            if (queued_msg.resource_request[i] > 0) ss << "R" << i << ":" << queued_msg.resource_request[i] << " ";
+                        }
+                        ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                        oss_log(ss.str());
                     }
                     // send ack message
                     memset(&ackMessage, 0, sizeof(ackMessage));
@@ -457,7 +486,11 @@ int main(int argc, char* argv[]) {
         } else {
             if (rcvMessage.process_running == 0) {
                 // worker indicates it is terminating
-                cout << "OSS: Worker " << rcvMessage.pid << " indicates it is terminating." << endl;
+                {
+                    ostringstream ss;
+                    ss << "OSS: Worker " << rcvMessage.pid << " indicates it is terminating. " << endl;
+                    oss_log(ss.str());
+                }
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
                 if (pcb_index != -1) {
                     // clean PCB entry
@@ -474,7 +507,11 @@ int main(int argc, char* argv[]) {
             }
             // process resource requests/releases
             if (rcvMessage.request_or_release == 1) {
-                cout << "OSS: Processing resource request from worker " << rcvMessage.pid << endl;
+                {
+                    ostringstream ss;
+                    ss << "OSS: Processing resource request from worker " << rcvMessage.pid << endl;
+                    oss_log(ss.str());
+                }
                 // check if resources are available
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
                 if (pcb_index != -1) {
@@ -492,16 +529,24 @@ int main(int argc, char* argv[]) {
                             resource_table.allocation_matrix[pcb_index][i] += rcvMessage.resource_request[i];
                         }
                     } else {
-                        cout << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
+                        {
+                            ostringstream ss;
+                            ss << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
+                            oss_log(ss.str());
+                        }
                         process_queue.push_back(rcvMessage);
                         continue; // skip sending ack for now
                     }
                 }
-                cout << "OSS: Resources allocated to worker " << rcvMessage.pid << " ";
-                for (int i = 0; i < MAX_RESOURCES; i++) {
-                    if (rcvMessage.resource_request[i] > 0) cout << "R" << i << ":" << rcvMessage.resource_request[i] << " ";
+                {
+                    ostringstream ss;
+                    ss << "OSS: Resources allocated to worker " << rcvMessage.pid << " ";
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        if (rcvMessage.resource_request[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_request[i] << " ";
+                    }
+                    ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                    oss_log(ss.str());
                 }
-                cout << "at time " << *sec << "s " << *nano << "ns" << endl;
                 // send message to worker acknowledging request
                 memset(&ackMessage, 0, sizeof(ackMessage));
                 ackMessage.mtype = rcvMessage.pid;
@@ -513,7 +558,11 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (rcvMessage.request_or_release == 0) {
-                cout << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
+                {
+                    ostringstream ss;
+                    ss << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
+                    oss_log(ss.str());
+                }
                 // release resources back to the available pool
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
                 if (pcb_index != -1) {
@@ -522,11 +571,15 @@ int main(int argc, char* argv[]) {
                         resource_table.allocation_matrix[pcb_index][i] -= rcvMessage.resource_release[i];
                     }
                 }
-                cout << "OSS: Resources released by worker " << rcvMessage.pid << " ";
-                for (int i = 0; i < MAX_RESOURCES; i++) {
-                    if (rcvMessage.resource_release[i] > 0) cout << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
+                {
+                    ostringstream ss;
+                    ss << "OSS: Resources released by worker " << rcvMessage.pid << " ";
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        if (rcvMessage.resource_release[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
+                    }
+                    ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                    oss_log(ss.str());
                 }
-                cout << "at time " << *sec << "s " << *nano << "ns" << endl;
                 // send message to worker acknowledging release
                 memset(&ackMessage, 0, sizeof(ackMessage));
                 ackMessage.mtype = rcvMessage.pid;
@@ -548,15 +601,6 @@ int main(int argc, char* argv[]) {
                 next_print_total += PRINT_INTERVAL_NANO;
             }
         }
-
-        pid_t terminated_pid = child_Terminated();
-        if (terminated_pid > 0) {
-            remove_pcb(table, terminated_pid);
-            running_processes--;
-            cout << "OSS: Detected termination of child PID " << terminated_pid << endl;
-        }
-
-
     }
 
     // cleanup
