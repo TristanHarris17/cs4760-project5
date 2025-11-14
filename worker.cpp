@@ -19,6 +19,7 @@ struct MessageBuffer {
     int request_or_release; // 1 for request, 0 for release
     int resource_request[MAX_RESOURCES]; // array of resource requests
     int resource_release[MAX_RESOURCES]; // array of resource releases
+    int mass_release; // 1 if mass release 0 if not
     int process_running; // 1 if running, 0 if not
 };
 
@@ -170,6 +171,7 @@ int main(int argc, char* argv[]) {
                     msg.pid = getpid();
                     msg.process_running = 1; // indicate process is running
                     msg.request_or_release = 0; // indicate release
+                    msg.mass_release = 1; // indicate mass release
 
                     for (int i = 0; i < MAX_RESOURCES; ++i) {
                         msg.resource_release[i] = release_request[i];

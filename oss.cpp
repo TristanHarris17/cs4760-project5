@@ -34,6 +34,7 @@ struct MessageBuffer {
     int request_or_release; // 1 for request, 0 for release
     int resource_request[MAX_RESOURCES]; // array of resource requests
     int resource_release[MAX_RESOURCES]; // array of resource releases
+    int mass_release; // 1 if mass release 0 if not
     int process_running; // 1 if running, 0 if not
 };
 
@@ -394,6 +395,11 @@ int main(int argc, char* argv[]) {
     // set initial resource table state
     resource_table.allocation_matrix.fill({0});
     resource_table.request_matrix.fill({0});
+    int total_requests = 0;
+    int total_mass_release = 0;
+    int total_resources_requested = 0;
+    int total_immediate_requests = 0;
+    int print_allo_table_interval = 0; 
 
     int launched_processes = 0;
     int running_processes = 0;
@@ -507,6 +513,12 @@ int main(int argc, char* argv[]) {
             }
             // process resource requests/releases
             if (rcvMessage.request_or_release == 1) {
+                // update total requests and total resources requested
+                total_requests++;
+                for (int i = 0; i < MAX_RESOURCES; i++) {
+                    total_resources_requested += rcvMessage.resource_request[i];
+                }
+
                 {
                     ostringstream ss;
                     ss << "OSS: Processing resource request from worker " << rcvMessage.pid << endl;
@@ -547,6 +559,11 @@ int main(int argc, char* argv[]) {
                     ss << "at time " << *sec << "s " << *nano << "ns" << endl;
                     oss_log(ss.str());
                 }
+                total_immediate_requests++;
+                if (++print_allo_table_interval >= 20) {
+                    print_allocation_matrix(resource_table.allocation_matrix);
+                    print_allo_table_interval = 0;
+                }
                 // send message to worker acknowledging request
                 memset(&ackMessage, 0, sizeof(ackMessage));
                 ackMessage.mtype = rcvMessage.pid;
@@ -563,6 +580,7 @@ int main(int argc, char* argv[]) {
                     ss << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
                     oss_log(ss.str());
                 }
+                if (rcvMessage.mass_release == 1) { total_mass_release++; }
                 // release resources back to the available pool
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
                 if (pcb_index != -1) {
@@ -602,6 +620,15 @@ int main(int argc, char* argv[]) {
             }
         }
     }
+
+    // ending report
+    ostringstream ss;
+    ss << "ENDING REPORT" << endl;
+    ss << "Total resources Requested: " << total_resources_requested << endl;
+    ss << "Total requests: " << total_requests << endl;
+    ss << "Times mass release was done: " << total_mass_release << endl;
+    ss << "Percentage of request granted immediately vs amount of total requests: " << (total_immediate_requests * 100.0 / total_requests) << "%" << endl;
+    oss_log_msg(ss.str());
 
     // cleanup
      shmdt(shm_clock);
