@@ -239,10 +239,11 @@ int main(int argc, char* argv[]) {
     int simul = -1;
     float time_limit = -1;
     float launch_interval = -1;
+    bool verbose_mode = false;
     string log_file = "";
     int opt;
 
-    while((opt = getopt(argc, argv, "hn:s:t:i:f:")) != -1) {
+    while((opt = getopt(argc, argv, "hn:s:t:i:f:v")) != -1) {
         switch(opt) {
             case 'h': {
                 cout << "Usage: oss -n proc -s simul -t time_limit -i launch_interval\n"
@@ -253,6 +254,7 @@ int main(int argc, char* argv[]) {
                     << "  -t time_limit     Time limit for each worker process in seconds (non-negative float)\n"
                     << "  -i launch_interval Interval between launching worker processes in seconds (non-negative float)\n"
                     << "  -f logfile        Log file name (optional)\n"
+                    << "  -v                Turn on verbose mode\n"
                     << "Example:\n"
                     << "  ./oss -n 10 -s 3 -t 2.5 -i 0.5 -f oss.log\n";
                 exit_handler();
@@ -325,6 +327,10 @@ int main(int argc, char* argv[]) {
                     exit_handler();
                 }
                  break;
+            }
+            case 'v': {
+                verbose_mode = true;
+                break;
             }
             default:
                 cerr << "Error: Unknown option or missing argument." << endl;
@@ -431,7 +437,9 @@ int main(int argc, char* argv[]) {
 
             // Update the next allowed launch time
             next_launch_total = current_total + launch_interval_nano;
-            print_process_table(table);
+            if (verbose_mode) {
+                print_process_table(table);
+            }
         }
 
         // process queued requests
@@ -542,9 +550,13 @@ int main(int argc, char* argv[]) {
                         }
                     } else {
                         {
-                            ostringstream ss;
-                            ss << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
-                            oss_log(ss.str());
+                            if (verbose_mode) {
+                                ostringstream ss;
+                                ss << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
+                                oss_log(ss.str());
+                            } else {
+                                cout << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
+                            }
                         }
                         process_queue.push_back(rcvMessage);
                         continue; // skip sending ack for now
@@ -557,10 +569,15 @@ int main(int argc, char* argv[]) {
                         if (rcvMessage.resource_request[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_request[i] << " ";
                     }
                     ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                    ss << "available resources: ";
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        ss << "R" << i << ":" << resource_table.available_resources[i] << " ";
+                    }
+                    ss << endl;
                     oss_log(ss.str());
                 }
                 total_immediate_requests++;
-                if (++print_allo_table_interval >= 20) {
+                if (++print_allo_table_interval >= 20 && verbose_mode) {
                     print_allocation_matrix(resource_table.allocation_matrix);
                     print_allo_table_interval = 0;
                 }
@@ -576,9 +593,13 @@ int main(int argc, char* argv[]) {
             }
             if (rcvMessage.request_or_release == 0) {
                 {
-                    ostringstream ss;
-                    ss << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
-                    oss_log(ss.str());
+                    if (verbose_mode) {
+                        ostringstream ss;
+                        ss << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
+                        oss_log(ss.str());
+                    } else {
+                        cout << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
+                    }
                 }
                 if (rcvMessage.mass_release == 1) { total_mass_release++; }
                 // release resources back to the available pool
@@ -590,13 +611,22 @@ int main(int argc, char* argv[]) {
                     }
                 }
                 {
-                    ostringstream ss;
-                    ss << "OSS: Resources released by worker " << rcvMessage.pid << " ";
-                    for (int i = 0; i < MAX_RESOURCES; i++) {
-                        if (rcvMessage.resource_release[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
+                    if (verbose_mode) {
+                        ostringstream ss;
+                        ss << "OSS: Resources released by worker " << rcvMessage.pid << " ";
+                        for (int i = 0; i < MAX_RESOURCES; i++) {
+                            if (rcvMessage.resource_release[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
+                        }
+                        ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                        ss << "available resources: ";
+                        for (int i = 0; i < MAX_RESOURCES; i++) {
+                            ss << "R" << i << ":" << resource_table.available_resources[i] << " ";
+                        }
+                        ss << endl;
+                        oss_log(ss.str());
+                    } else {
+                        
                     }
-                    ss << "at time " << *sec << "s " << *nano << "ns" << endl;
-                    oss_log(ss.str());
                 }
                 // send message to worker acknowledging release
                 memset(&ackMessage, 0, sizeof(ackMessage));
@@ -612,11 +642,13 @@ int main(int argc, char* argv[]) {
 
         // call print_process_table every half-second of simulated time
         {
-            long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
-            while (current_total >= next_print_total) {
-                print_process_table(table);
-                print_allocation_matrix(resource_table.allocation_matrix);
-                next_print_total += PRINT_INTERVAL_NANO;
+            if (verbose_mode) {
+                long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
+                while (current_total >= next_print_total) {
+                    print_process_table(table);
+                    print_allocation_matrix(resource_table.allocation_matrix);
+                    next_print_total += PRINT_INTERVAL_NANO;
+                }
             }
         }
     }

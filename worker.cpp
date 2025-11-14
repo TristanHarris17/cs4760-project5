@@ -283,6 +283,7 @@ int main(int argc, char* argv[]) {
 
                 // update held resources
                 if (resource_index == latest_requested_resource_index && held_resources[resource_index] - amount == 0) {
+                    held_resources[resource_index] -= amount;
                     // released all instances of latest requested resource, need to update latest_requested_resource_index
                     latest_requested_resource_index = -1;
                     for (int i = MAX_RESOURCES - 1; i >= 0; --i) {
@@ -291,8 +292,9 @@ int main(int argc, char* argv[]) {
                             break;
                         }
                     }
+                }else {
+                    held_resources[resource_index] -= amount;
                 }
-                held_resources[resource_index] -= amount;
                 next_request_release_total = (long long)(*sec) * 1000000000LL + (long long)(*nano) + request_release_interval; // schedule next request/release time
             }
         }
