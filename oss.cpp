@@ -527,11 +527,6 @@ int main(int argc, char* argv[]) {
                     total_resources_requested += rcvMessage.resource_request[i];
                 }
 
-                {
-                    ostringstream ss;
-                    ss << "OSS: Processing resource request from worker " << rcvMessage.pid << endl;
-                    oss_log(ss.str());
-                }
                 // check if resources are available
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
                 if (pcb_index != -1) {
@@ -569,7 +564,7 @@ int main(int argc, char* argv[]) {
                         if (rcvMessage.resource_request[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_request[i] << " ";
                     }
                     ss << "at time " << *sec << "s " << *nano << "ns" << endl;
-                    ss << "available resources: ";
+                    ss << "OSS: available resources: ";
                     for (int i = 0; i < MAX_RESOURCES; i++) {
                         ss << "R" << i << ":" << resource_table.available_resources[i] << " ";
                     }
@@ -592,15 +587,6 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (rcvMessage.request_or_release == 0) {
-                {
-                    if (verbose_mode) {
-                        ostringstream ss;
-                        ss << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
-                        oss_log(ss.str());
-                    } else {
-                        cout << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
-                    }
-                }
                 if (rcvMessage.mass_release == 1) { total_mass_release++; }
                 // release resources back to the available pool
                 int pcb_index = find_pcb_by_pid(rcvMessage.pid);
@@ -618,7 +604,7 @@ int main(int argc, char* argv[]) {
                             if (rcvMessage.resource_release[i] > 0) ss << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
                         }
                         ss << "at time " << *sec << "s " << *nano << "ns" << endl;
-                        ss << "available resources: ";
+                        ss << "OSS: available resources: ";
                         for (int i = 0; i < MAX_RESOURCES; i++) {
                             ss << "R" << i << ":" << resource_table.available_resources[i] << " ";
                         }

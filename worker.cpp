@@ -83,11 +83,6 @@ int main(int argc, char* argv[]) {
     int held_resources[MAX_RESOURCES] = {0};
     int latest_requested_resource_index = -1;
 
-    // Print starting message
-    cout << "Worker starting, " << "PID:" << getpid() << " PPID:" << getppid() << endl
-         << "Called With:" << endl
-         << "Interval: " << target_seconds << " seconds, " << target_nano << " nanoseconds" << endl;
-
     // calculate termination time
     int end_seconds = *sec + target_seconds;
     int end_nano = *nano + target_nano;
@@ -100,6 +95,12 @@ int main(int argc, char* argv[]) {
     uniform_int_distribution<> dis(0, 100000000); // between 0 and 100 milliseconds
     long long request_release_interval = dis(gen);
     long long next_request_release_total = (long long)(*sec) * 1000000000LL + (long long)(*nano) + request_release_interval;
+
+        // Print starting message
+    cout << "Worker starting, " << "PID:" << getpid() << " PPID:" << getppid() << endl
+         << "Called With:" << endl
+         << "Interval: " << target_seconds << " seconds, " << target_nano << " nanoseconds" << endl
+         << "Request/Release Interval: " << request_release_interval << " nanoseconds" << endl;
 
     // setup distribution for request/release action
     uniform_int_distribution<> action_dis(1, 100);
@@ -140,8 +141,7 @@ int main(int argc, char* argv[]) {
         long long current_total = (long long)(*sec) * 1000000000LL + (long long)(*nano);
         if (current_total >= next_request_release_total) {
             if (all_of(held_resources, held_resources + MAX_RESOURCES, [](int i){ return i >= MAX_INSTANCES; })) {
-                // holding max of all resources
-                cout << "Worker PID:" << getpid() << " holding max of all resources" << endl;
+                // holding max of all resources skip request
                 continue;
             }
             // decide whether to request or release a resource 60% request, 40% release
@@ -223,7 +223,6 @@ int main(int argc, char* argv[]) {
                             break;
                         }
                     }
-                    cout << "Worker PID:" << getpid() << " updated latest requested resource index to " << latest_requested_resource_index << endl;
                     next_request_release_total = (long long)(*sec) * 1000000000LL + (long long)(*nano) + request_release_interval; // schedule next request/release time
                     continue;
                 }
@@ -282,8 +281,9 @@ int main(int argc, char* argv[]) {
                 }
 
                 // update held resources
-                if (resource_index == latest_requested_resource_index && held_resources[resource_index] - amount == 0) {
-                    held_resources[resource_index] -= amount;
+                held_resources[resource_index] -= amount;
+                if (resource_index == latest_requested_resource_index && held_resources[resource_index] == 0) {
+
                     // released all instances of latest requested resource, need to update latest_requested_resource_index
                     latest_requested_resource_index = -1;
                     for (int i = MAX_RESOURCES - 1; i >= 0; --i) {
@@ -292,8 +292,6 @@ int main(int argc, char* argv[]) {
                             break;
                         }
                     }
-                }else {
-                    held_resources[resource_index] -= amount;
                 }
                 next_request_release_total = (long long)(*sec) * 1000000000LL + (long long)(*nano) + request_release_interval; // schedule next request/release time
             }
