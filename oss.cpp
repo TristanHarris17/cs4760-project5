@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <sys/wait.h>
 #include <vector>
+#include <array>
+#include <deque>
 #include <iomanip>
 #include <signal.h>
 #include <random>
@@ -27,7 +29,7 @@ struct PCB {
 
 struct MessageBuffer {
     long mtype;
-    int pid;
+    pid_t pid;
     int request_or_release; // 1 for request, 0 for release
     int resource_request[MAX_RESOURCES]; // array of resource requests
     int resource_release[MAX_RESOURCES]; // array of resource releases
@@ -39,7 +41,9 @@ key_t sh_key = ftok("oss.cpp", 0);
 int shmid = shmget(sh_key, sizeof(int)*2, IPC_CREAT | 0666);
 int *shm_clock;
 int *sec;
-vector <PCB> table(18);
+vector <PCB> table(MAX_PROCESSES);
+resource_descriptor resource_table;
+deque<MessageBuffer> process_queue;
 const int increment_amount = 10000;
 
 // setup message queue
@@ -105,6 +109,15 @@ int find_empty_pcb(const vector<PCB> &table) {
     return -1;
 }
 
+int find_pcb_by_pid(pid_t pid) {
+    for (size_t i = 0; i < table.size(); ++i) {
+        if (table[i].occupied && table[i].pid == pid) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 int remove_pcb(vector<PCB> &table, pid_t pid) {
     for (size_t i = 0; i < table.size(); ++i) {
         if (table[i].occupied && table[i].pid == pid) {
@@ -141,6 +154,33 @@ void print_process_table(const std::vector<PCB> &table) {
                  << std::setw(12) << p.start_nano;
         } else {
             cout << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-" << std::setw(12) << "-";
+        }
+        cout << endl;
+    }
+    cout << endl;
+}
+
+void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> &allocation_matrix) {
+    using std::cout;
+    using std::endl;
+
+    // Header
+    cout << std::left << std::setw(6) << "Proc";
+    for (int r = 0; r < MAX_RESOURCES; ++r) {
+        std::ostringstream h;
+        h << "R" << r;
+        cout << std::setw(6) << h.str();
+    }
+    cout << endl;
+
+    // Separator
+    cout << std::string(6 + 6 * MAX_RESOURCES, '-') << endl;
+
+    // Rows
+    for (int p = 0; p < MAX_PROCESSES; ++p) {
+        cout << std::left << std::setw(6) << p;
+        for (int r = 0; r < MAX_RESOURCES; ++r) {
+            cout << std::setw(6) << allocation_matrix[p][r];
         }
         cout << endl;
     }
@@ -330,7 +370,11 @@ int main(int argc, char* argv[]) {
            << "-i: " << launch_interval << endl;
         oss_log(ss.str());
     }
- 
+
+    // set initial resource table state
+    resource_table.allocation_matrix.fill({0});
+    resource_table.request_matrix.fill({0});
+
     int launched_processes = 0;
     int running_processes = 0;
 
@@ -364,6 +408,42 @@ int main(int argc, char* argv[]) {
             print_process_table(table);
         }
 
+        // TODO check queue to see if resources can be allocated to waiting processes
+        while (!process_queue.empty()) {
+            MessageBuffer &queued_msg = process_queue.front();
+            int pcb_index = find_pcb_by_pid(queued_msg.pid);
+            if (pcb_index != -1) {
+                bool can_allocate = true;
+                for (int i = 0; i < MAX_RESOURCES; i++) {
+                    if (queued_msg.resource_request[i] > resource_table.available_resources[i]) {
+                        can_allocate = false;
+                        break;
+                    }
+                }
+                if (can_allocate) {
+                    // allocate resources
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        resource_table.available_resources[i] -= queued_msg.resource_request[i];
+                        resource_table.allocation_matrix[pcb_index][i] += queued_msg.resource_request[i];
+                    }
+                    // send ack message
+                    memset(&ackMessage, 0, sizeof(ackMessage));
+                    ackMessage.mtype = queued_msg.pid;
+                    ackMessage.process_running = 1;
+                    size_t ack_size = sizeof(MessageBuffer) - sizeof(long);
+                    if (msgsnd(msgid, &ackMessage, ack_size, 0) == -1) {
+                        perror("oss msgsnd ack failed");
+                        exit_handler();
+                    }
+                    process_queue.pop_front(); // remove from queue
+                } else {
+                    break; // cannot allocate for the front of the queue, stop checking
+                }
+            } else {
+                process_queue.pop_front(); // PCB not found, remove from queue
+            }
+        }
+
         // non blocking message receive 
         ssize_t msg_size = sizeof(MessageBuffer) - sizeof(long);
         ssize_t ret = msgrcv(msgid, &rcvMessage, msg_size, getpid(), IPC_NOWAIT);
@@ -377,14 +457,51 @@ int main(int argc, char* argv[]) {
         } else {
             if (rcvMessage.process_running == 0) {
                 // worker indicates it is terminating
-                cout << "OSS: Worker " << rcvMessage.mtype << " indicates it is terminating." << endl;
-                // TODO handle resource clean up from terminating worker
+                cout << "OSS: Worker " << rcvMessage.pid << " indicates it is terminating." << endl;
+                int pcb_index = find_pcb_by_pid(rcvMessage.pid);
+                if (pcb_index != -1) {
+                    // clean PCB entry
+                    remove_pcb(table, rcvMessage.pid);
+                    // release allocated resources add them back to available pool
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        resource_table.available_resources[i] += resource_table.allocation_matrix[pcb_index][i];
+                    }
+                    resource_table.allocation_matrix[pcb_index].fill(0); // clean allocation entry
+                    resource_table.request_matrix[pcb_index].fill(0); // clean request entry
+                }
+                running_processes--;
                 continue;
             }
             // process resource requests/releases
-
             if (rcvMessage.request_or_release == 1) {
-                cout << "OSS: Processing resource request from worker " << rcvMessage.mtype << endl;
+                cout << "OSS: Processing resource request from worker " << rcvMessage.pid << endl;
+                // check if resources are available
+                int pcb_index = find_pcb_by_pid(rcvMessage.pid);
+                if (pcb_index != -1) {
+                    bool can_allocate = true;
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        if (rcvMessage.resource_request[i] > resource_table.available_resources[i]) {
+                            can_allocate = false;
+                            break;
+                        }
+                    }
+                    if (can_allocate) {
+                        // allocate resources
+                        for (int i = 0; i < MAX_RESOURCES; i++) {
+                            resource_table.available_resources[i] -= rcvMessage.resource_request[i];
+                            resource_table.allocation_matrix[pcb_index][i] += rcvMessage.resource_request[i];
+                        }
+                    } else {
+                        cout << "OSS: Resources not available for worker " << rcvMessage.pid << ", request queued." << " At time " << *sec << "s " << *nano << "ns" << endl;
+                        process_queue.push_back(rcvMessage);
+                        continue; // skip sending ack for now
+                    }
+                }
+                cout << "OSS: Resources allocated to worker " << rcvMessage.pid << " ";
+                for (int i = 0; i < MAX_RESOURCES; i++) {
+                    if (rcvMessage.resource_request[i] > 0) cout << "R" << i << ":" << rcvMessage.resource_request[i] << " ";
+                }
+                cout << "at time " << *sec << "s " << *nano << "ns" << endl;
                 // send message to worker acknowledging request
                 memset(&ackMessage, 0, sizeof(ackMessage));
                 ackMessage.mtype = rcvMessage.pid;
@@ -396,7 +513,20 @@ int main(int argc, char* argv[]) {
                 }
             }
             if (rcvMessage.request_or_release == 0) {
-                cout << "OSS: Processing resource release from worker " << rcvMessage.mtype << endl;
+                cout << "OSS: Processing resource release from worker " << rcvMessage.pid << endl;
+                // release resources back to the available pool
+                int pcb_index = find_pcb_by_pid(rcvMessage.pid);
+                if (pcb_index != -1) {
+                    for (int i = 0; i < MAX_RESOURCES; i++) {
+                        resource_table.available_resources[i] += rcvMessage.resource_release[i];
+                        resource_table.allocation_matrix[pcb_index][i] -= rcvMessage.resource_release[i];
+                    }
+                }
+                cout << "OSS: Resources released by worker " << rcvMessage.pid << " ";
+                for (int i = 0; i < MAX_RESOURCES; i++) {
+                    if (rcvMessage.resource_release[i] > 0) cout << "R" << i << ":" << rcvMessage.resource_release[i] << " ";
+                }
+                cout << "at time " << *sec << "s " << *nano << "ns" << endl;
                 // send message to worker acknowledging release
                 memset(&ackMessage, 0, sizeof(ackMessage));
                 ackMessage.mtype = rcvMessage.pid;
@@ -414,6 +544,7 @@ int main(int argc, char* argv[]) {
             long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
             while (current_total >= next_print_total) {
                 print_process_table(table);
+                print_allocation_matrix(resource_table.allocation_matrix);
                 next_print_total += PRINT_INTERVAL_NANO;
             }
         }

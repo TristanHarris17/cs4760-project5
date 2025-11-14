@@ -15,7 +15,7 @@ using namespace std;
 
 struct MessageBuffer {
     long mtype;
-    int pid;
+    pid_t pid;
     int request_or_release; // 1 for request, 0 for release
     int resource_request[MAX_RESOURCES]; // array of resource requests
     int resource_release[MAX_RESOURCES]; // array of resource releases
@@ -148,7 +148,6 @@ int main(int argc, char* argv[]) {
             if (action_roll <= 60) {
                 // request resource
                 int resource_index = get_resource_request(held_resources);
-                cout << "Worker PID:" << getpid() << " selected resource " << resource_index << " to request" << endl;
                 // determine how much to request
                 int max_amount = MAX_INSTANCES - held_resources[resource_index];
                 uniform_int_distribution<> amount_dis(1, max_amount);
