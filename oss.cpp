@@ -151,7 +151,7 @@ int remove_pcb(vector<PCB> &table, pid_t pid) {
     return -1;
 }
 
-void print_process_table(const std::vector<PCB> &table) {
+void print_process_table(const std::vector<PCB> &table, bool verbose) {
     ostringstream ss;
     using std::endl;
     ss << std::left
@@ -176,10 +176,16 @@ void print_process_table(const std::vector<PCB> &table) {
         ss << endl;
     }
     ss << endl;
-    oss_log_msg(ss.str());
+    if (verbose){
+        oss_log_msg(ss.str());
+    } else
+    {
+        cout << ss.str();
+    }
+
 }
 
-void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> &allocation_matrix) {
+void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> &allocation_matrix, bool verbose) {
     using std::endl;
     std::ostringstream ss;
 
@@ -205,8 +211,12 @@ void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MA
         ss << endl;
     }
     ss << endl;
-
-    oss_log_msg(ss.str());
+    if (verbose){
+        oss_log_msg(ss.str());
+    } else
+    {
+        cout << ss.str();
+    }
 }
 
 void signal_handler(int sig) {
@@ -437,9 +447,7 @@ int main(int argc, char* argv[]) {
 
             // Update the next allowed launch time
             next_launch_total = current_total + launch_interval_nano;
-            if (verbose_mode) {
-                print_process_table(table);
-            }
+            print_process_table(table, verbose_mode);
         }
 
         // process queued requests
@@ -573,7 +581,7 @@ int main(int argc, char* argv[]) {
                 }
                 total_immediate_requests++;
                 if (++print_allo_table_interval >= 20 && verbose_mode) {
-                    print_allocation_matrix(resource_table.allocation_matrix);
+                    print_allocation_matrix(resource_table.allocation_matrix, verbose_mode);
                     print_allo_table_interval = 0;
                 }
                 // send message to worker acknowledging request
@@ -628,13 +636,11 @@ int main(int argc, char* argv[]) {
 
         // call print_process_table every half-second of simulated time
         {
-            if (verbose_mode) {
-                long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
-                while (current_total >= next_print_total) {
-                    print_process_table(table);
-                    print_allocation_matrix(resource_table.allocation_matrix);
-                    next_print_total += PRINT_INTERVAL_NANO;
-                }
+            long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
+            while (current_total >= next_print_total) {
+                print_process_table(table, verbose_mode);
+                print_allocation_matrix(resource_table.allocation_matrix, verbose_mode);
+                next_print_total += PRINT_INTERVAL_NANO;
             }
         }
     }
