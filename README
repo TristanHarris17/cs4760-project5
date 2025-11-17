@@ -1,23 +1,30 @@
 Name: Tristan Harris
-Date: 11/11/2025 
+Date: 11/11/2025
 Environment: Linux (WSL), Visual Studio Code
 Version Control: GitHub https://github.com/TristanHarris17/cs4760-project5.git
+
 How to compile the project:
-Type ’make’
+Type 'make'
+
 Example of how to run the project:
 ./oss -n 3 -s 2 -t 4 -i 0.6 -f log.txt -v
 
+Outputs
+- OSS will output a message each time a resource is allocated or released and then print available resources directly after.
+- Workers will print what they are doing (requesting, releasing, making out-of-order requests).
+- The process table and allocation matrix indices correspond with each other
+  - e.g., the process at index 1 in the process table will be at index 1 in the allocation matrix
+
 Verbose output mode
-- To enable Verbose mode add -v flag
-- This will output all messages from OSS to the provided log file 
-- If verbose mode is off (default) the following will be printed to the log file
-    - OSS starting message
-    - resrouces granted message
-    - resrouces avaiable
+- To enable verbose mode add the -v flag.
+- This will output all messages from OSS to the provided log file.
+- If verbose mode is off (default) only allocation messages from OSS will be printed to the provided log file
+  - all outputs will still be printed to the console
 
-Generative AI used: chatgpt
-Prompts: 
-- Write a function that prints the allocation matrix in a formated way 
+Generative AI used: ChatGPT
+Prompts:
+- Write a function that prints the allocation matrix in a formatted way
 
-Summary: 
-- wrote the function properly
+Summary:
+- wrote the function properly alignment was off slightly
+
