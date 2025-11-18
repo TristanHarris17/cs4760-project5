@@ -16,6 +16,7 @@
 #include <sstream>
 #include <cstring>
 #include <algorithm>
+#include <chrono>
 #include "resources.h"
 
 using namespace std;
@@ -176,12 +177,7 @@ void print_process_table(const std::vector<PCB> &table, bool verbose) {
         ss << endl;
     }
     ss << endl;
-    if (verbose){
-        oss_log_msg(ss.str());
-    } else
-    {
-        cout << ss.str();
-    }
+    oss_log_msg(ss.str());
 
 }
 
@@ -193,7 +189,7 @@ void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MA
     const int res_col = 8;
 
     // Header
-    ss << std::left << std::setw(proc_col) << "Proc";
+    ss << std::left << std::setw(proc_col) << "Index";
     for (int r = 0; r < MAX_RESOURCES; ++r) {
         ss << std::right << std::setw(res_col) << ("R" + std::to_string(r));
     }
@@ -211,12 +207,7 @@ void print_allocation_matrix(const std::array<std::array<int, MAX_RESOURCES>, MA
         ss << endl;
     }
     ss << endl;
-    if (verbose){
-        oss_log_msg(ss.str());
-    } else
-    {
-        cout << ss.str();
-    }
+    oss_log_msg(ss.str());
 }
 
 void signal_handler(int sig) {
@@ -366,6 +357,8 @@ int main(int argc, char* argv[]) {
     int *nano = &(shm_clock[1]);
     *sec = *nano = 0;
 
+    time_t start_time = time(nullptr); // track time for 5 second real-time limit
+
     // print interval using simulated clock: 0.5 seconds
     const long long NSEC_PER_SEC = 1000000000LL;
     const long long PRINT_INTERVAL_NANO = 500000000LL;
@@ -431,7 +424,7 @@ int main(int argc, char* argv[]) {
 
         // Check if it's time to launch a new worker
         long long current_total = (long long)(*sec) * NSEC_PER_SEC + (long long)(*nano);
-        if (launched_processes < proc && running_processes < simul && current_total >= next_launch_total) {
+        if (launched_processes < proc && running_processes < simul && running_processes < MAX_PROCESSES && current_total >= next_launch_total && (time(nullptr) - start_time) < 5) {
             pid_t worker_pid = launch_worker(time_limit);
 
             // Find empty slot in PCB array and populate it with new process info
