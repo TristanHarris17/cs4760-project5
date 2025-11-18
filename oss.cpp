@@ -357,6 +357,15 @@ int main(int argc, char* argv[]) {
     int *nano = &(shm_clock[1]);
     *sec = *nano = 0;
 
+    // Initialize PCB 
+    for (size_t i = 0; i < table.size(); ++i) {
+        table[i].occupied = false;
+        table[i].pid = -1;
+        table[i].start_sec = 0;
+        table[i].start_nano = 0;
+        table[i].pcb_index = -1;
+    }
+
     time_t start_time = time(nullptr); // track time for 5 second real-time limit
 
     // print interval using simulated clock: 0.5 seconds
@@ -403,7 +412,6 @@ int main(int argc, char* argv[]) {
 
     // set initial resource table state
     resource_table.allocation_matrix.fill({0});
-    resource_table.request_matrix.fill({0});
     int total_requests = 0;
     int total_mass_release = 0;
     int total_resources_requested = 0;
@@ -429,63 +437,80 @@ int main(int argc, char* argv[]) {
 
             // Find empty slot in PCB array and populate it with new process info
             int pcb_index = find_empty_pcb(table);
-            table[pcb_index].occupied = true;
-            table[pcb_index].pid = worker_pid;
-            table[pcb_index].start_sec = *sec;
-            table[pcb_index].start_nano = *nano;
-            table[pcb_index].pcb_index = pcb_index;
+            if (pcb_index == -1) {
+                // no free PCB slot found; avoid undefined behavior and kill the worker
+                cerr << "OSS: no free PCB slot available for new worker (pid=" << worker_pid << "). Killing worker." << endl;
+                kill(worker_pid, SIGTERM);
+            } else {
+                table[pcb_index].occupied = true;
+                table[pcb_index].pid = worker_pid;
+                table[pcb_index].start_sec = *sec;
+                table[pcb_index].start_nano = *nano;
+                table[pcb_index].pcb_index = pcb_index;
 
-            launched_processes++;
-            running_processes++;
+                launched_processes++;
+                running_processes++;
+            }
 
             // Update the next allowed launch time
             next_launch_total = current_total + launch_interval_nano;
             print_process_table(table, verbose_mode);
         }
 
-        // process queued requests
-        while (!process_queue.empty()) {
-            MessageBuffer &queued_msg = process_queue.front();
-            int pcb_index = find_pcb_by_pid(queued_msg.pid);
-            if (pcb_index != -1) {
-                bool can_allocate = true;
-                for (int i = 0; i < MAX_RESOURCES; i++) {
-                    if (queued_msg.resource_request[i] > resource_table.available_resources[i]) {
-                        can_allocate = false;
+        // process queued requests: scan whole queue and allocate any request that can be satisfied
+        if (!process_queue.empty()) {
+            bool allocated_any;
+            do {
+                allocated_any = false;
+                for (size_t qi = 0; qi < process_queue.size(); ++qi) {
+                    MessageBuffer &queued_msg = process_queue[qi];
+                    int pcb_index = find_pcb_by_pid(queued_msg.pid);
+                    if (pcb_index == -1) {
+                        // PCB no longer exists; remove this queued message
+                        process_queue.erase(process_queue.begin() + qi);
+                        allocated_any = true; // restart scan
                         break;
                     }
-                }
-                if (can_allocate) {
-                    // allocate resources
+
+                    bool can_allocate = true;
                     for (int i = 0; i < MAX_RESOURCES; i++) {
-                        resource_table.available_resources[i] -= queued_msg.resource_request[i];
-                        resource_table.allocation_matrix[pcb_index][i] += queued_msg.resource_request[i];
-                    }
-                    { 
-                        ostringstream ss;
-                        ss << "OSS: Allocated queued resources to worker " << queued_msg.pid << " ";
-                        for (int i = 0; i < MAX_RESOURCES; i++) {
-                            if (queued_msg.resource_request[i] > 0) ss << "R" << i << ":" << queued_msg.resource_request[i] << " ";
+                        if (queued_msg.resource_request[i] > resource_table.available_resources[i]) {
+                            can_allocate = false;
+                            break;
                         }
-                        ss << "at time " << *sec << "s " << *nano << "ns" << endl;
-                        oss_log(ss.str());
                     }
-                    // send ack message
-                    memset(&ackMessage, 0, sizeof(ackMessage));
-                    ackMessage.mtype = queued_msg.pid;
-                    ackMessage.process_running = 1;
-                    size_t ack_size = sizeof(MessageBuffer) - sizeof(long);
-                    if (msgsnd(msgid, &ackMessage, ack_size, 0) == -1) {
-                        perror("oss msgsnd ack failed");
-                        exit_handler();
+                    if (can_allocate) {
+                        // allocate resources
+                        for (int i = 0; i < MAX_RESOURCES; i++) {
+                            resource_table.available_resources[i] -= queued_msg.resource_request[i];
+                            resource_table.allocation_matrix[pcb_index][i] += queued_msg.resource_request[i];
+                        }
+                        {
+                            ostringstream ss;
+                            ss << "OSS: Allocated queued resources to worker " << queued_msg.pid << " ";
+                            for (int i = 0; i < MAX_RESOURCES; i++) {
+                                if (queued_msg.resource_request[i] > 0) ss << "R" << i << ":" << queued_msg.resource_request[i] << " ";
+                            }
+                            ss << "at time " << *sec << "s " << *nano << "ns" << endl;
+                            oss_log(ss.str());
+                        }
+                        // send ack message
+                        memset(&ackMessage, 0, sizeof(ackMessage));
+                        ackMessage.mtype = queued_msg.pid;
+                        ackMessage.process_running = 1;
+                        size_t ack_size = sizeof(MessageBuffer) - sizeof(long);
+                        if (msgsnd(msgid, &ackMessage, ack_size, 0) == -1) {
+                            perror("oss msgsnd ack failed");
+                            exit_handler();
+                        }
+                        // remove this entry and restart scanning
+                        process_queue.erase(process_queue.begin() + qi);
+                        allocated_any = true;
+                        break;
                     }
-                    process_queue.pop_front(); // remove from queue
-                } else {
-                    break; // cannot allocate for the front of the queue, stop checking
+                    // if cannot allocate, continue to next queued message
                 }
-            } else {
-                process_queue.pop_front(); // PCB not found, remove from queue
-            }
+            } while (allocated_any && !process_queue.empty());
         }
 
         // non blocking message receive 
@@ -515,7 +540,6 @@ int main(int argc, char* argv[]) {
                         resource_table.available_resources[i] += resource_table.allocation_matrix[pcb_index][i];
                     }
                     resource_table.allocation_matrix[pcb_index].fill(0); // clean allocation entry
-                    resource_table.request_matrix[pcb_index].fill(0); // clean request entry
                 }
                 running_processes--;
                 continue;

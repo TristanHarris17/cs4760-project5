@@ -24,8 +24,8 @@ Verbose output mode
 Generative AI used: ChatGPT
 Prompts:
 - Write a function that prints the allocation matrix in a formatted way
-
+- there is a bug in my queue handler that is only allowing it to scan the first entry in the queue I want it to scan the entire queue
 Summary:
 - wrote the function properly alignment was off slightly
-- I tried to use a minimal amount of AI for this project this was the only thing I used it for
+- fixed the queue handler portion
 

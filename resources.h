@@ -10,7 +10,6 @@
 struct resource_descriptor {
     std::array<int, MAX_RESOURCES> available_resources = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5};
     std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> allocation_matrix = {};
-    std::array<std::array<int, MAX_RESOURCES>, MAX_PROCESSES> request_matrix = {};
 };
 
 #endif
